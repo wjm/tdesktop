@@ -171,6 +171,11 @@ QPointer<Ui::BoxContent> ShowDropMediaBox(
 	not_null<Data::Forum*> forum,
 	FnMut<void()> &&successCallback = nullptr);
 
+QPointer<Ui::RpWidget> ShowForwardNoQuoteMessagesBox(
+	not_null<Window::SessionNavigation*> navigation,
+	MessageIdsList &&items,
+	FnMut<void()> &&successCallback = nullptr);
+
 QPointer<Ui::BoxContent> ShowSendNowMessagesBox(
 	not_null<Window::SessionNavigation*> navigation,
 	not_null<History*> history,

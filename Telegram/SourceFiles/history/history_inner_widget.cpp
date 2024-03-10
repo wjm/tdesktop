@@ -548,6 +548,7 @@ void HistoryInner::setupSharingDisallowed() {
 }
 
 bool HistoryInner::hasSelectRestriction() const {
+	return false;
 	if (!_sharingDisallowed.current()) {
 		return false;
 	} else if (const auto chat = _peer->asChat()) {
@@ -2436,7 +2437,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 			if (isUponSelected != -2) {
 				auto fwdSubmenu = std::make_unique<Ui::PopupMenu>(this, st::popupMenuWithIcons);
 				auto repeatSubmenu = std::make_unique<Ui::PopupMenu>(this, st::popupMenuWithIcons);
-				if (item->allowsForward()) {
+				if (true) {//if (item->allowsForward()) {
 					fwdSubmenu->addAction(tr::lng_context_forward_msg_old(tr::now), [=] {
 						oldForwardItem(itemId);
 					}, &st::menuIconForward);
@@ -2586,7 +2587,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		const auto canDelete = item
 			&& item->canDelete()
 			&& (item->isRegular() || !item->isService());
-		const auto canForward = item && item->allowsForward();
+		const auto canForward = item; //&& item->allowsForward();
 		const auto canReport = item && item->suggestReport();
 		const auto canBlockSender = item && item->history()->peer->isRepliesChat();
 		const auto view = viewByItem(item);
@@ -2925,12 +2926,14 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 }
 
 bool HistoryInner::hasCopyRestriction(HistoryItem *item) const {
+	return false;
 	return !_peer->allowsForwarding() || (item && item->forbidsForward());
 }
 
 bool HistoryInner::hasCopyMediaRestriction(
 		not_null<HistoryItem*> item) const {
-	return hasCopyRestriction(item) || item->forbidsSaving();
+	//return hasCopyRestriction(item) || item->forbidsSaving();
+	return false;
 }
 
 bool HistoryInner::showCopyRestriction(HistoryItem *item) {

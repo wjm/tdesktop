@@ -404,11 +404,15 @@ bool AddForwardSelectedAction(
 				strong->cancelSelection();
 			}
 		};
-		Window::ShowNewForwardMessagesBox(
-				request.navigation,
-				ExtractIdsList(request.selectedItems),
-				true,
-				callback);
+		// Window::ShowNewForwardMessagesBox(
+		// 		request.navigation,
+		// 		ExtractIdsList(request.selectedItems),
+		// 		true,
+		// 		callback);
+		Window::ShowForwardNoQuoteMessagesBox(
+			request.navigation,
+			ExtractIdsList(request.selectedItems),
+			callback);
 	}, &st::menuIconForward);
 	menu->addAction(tr::lng_forward_to_saved_message(tr::now), [=] {
 		const auto weak = Ui::MakeWeak(list);
@@ -444,7 +448,8 @@ bool AddForwardMessageAction(
 	const auto item = request.item;
 	if (!request.selectedItems.empty()) {
 		return false;
-	} else if (!item || !item->allowsForward()) {
+	} else if (!item ) {
+	//} else if (!item || !item->allowsForward()) {
 		return false;
 	}
 	const auto owner = &item->history()->owner();

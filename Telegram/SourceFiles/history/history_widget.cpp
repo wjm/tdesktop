@@ -14,7 +14,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_sending.h"
 #include "api/api_send_progress.h"
 #include "api/api_unread_things.h"
+#include "api/api_text_entities.h"
 #include "ui/boxes/confirm_box.h"
+#include "base/random.h"
 #include "boxes/delete_messages_box.h"
 #include "boxes/send_files_box.h"
 #include "boxes/share_box.h"
@@ -7965,7 +7967,7 @@ void HistoryWidget::forwardNoQuoteSelected() {
 		return;
 	}
 	const auto weak = Ui::MakeWeak(this);
-	Window::ShowNewForwardMessagesBox(controller(), getSelectedItems(), true, [=] {
+	Window::ShowForwardNoQuoteMessagesBox(controller(), getSelectedItems(), [=] {
 		if (const auto strong = weak.data()) {
 			strong->clearSelected();
 		}
@@ -7984,21 +7986,145 @@ void HistoryWidget::forwardSelectedToSavedMessages() {
 	const auto session = &item->history()->peer->session();
 	const auto self = api->session().user()->asUser();
 	auto msgItems = session->data().idsToItems(items);
+	const auto history = item->history();
+	auto histories = &item->history()->peer->owner().histories();
 
 	auto action = Api::SendAction(item->history()->peer->owner().history(self));
 	action.clearDraft = false;
 	action.generateLocal = false;
 
-	const auto history = item->history()->peer->owner().history(self);
-	auto resolved = history->resolveForwardDraft(Data::ForwardDraft{ .ids = std::move(items) });
+	/*const auto history = item->history()->peer->owner().history(self);
+	auto resolved = history->resolveForwardDraft(Data::ForwardDraft{ .ids = std::move(items) });*/
+	auto message = Api::MessageToSend(action);
+	message.textWithTags = { item->originalText().text, TextUtilities::ConvertEntitiesToTextTags(item->originalText().entities) };
+	//message.action = Api::SendAction(history);
+	//api->sendMessage(std::move(message));
+	auto mediaAlbums = QMap<uint64, QVector<MTPInputSingleMedia>>();
 
-	api->forwardMessages(std::move(resolved), action, [=] {
+	for (const auto item : items) {
+		auto it = controller()->session().data().message(item);
+		auto media = it->media();
+		if (!media) {
+			continue;
+		}
+
+		// Get newest file reference for forward as copy
+		auto refreshed = [=](const Data::UpdatedFileReferences& updates) {
+			if (updates.data.empty()) {
+				return;
+			}
+			if (media->photo()) {
+				media->photo()->refreshFileReference(updates.data.cbegin()->second);
+			}
+			else if (media->document()) {
+				media->document()->refreshFileReference(updates.data.cbegin()->second);
+			}
+			};
+		auto origin = media->photo() ? Data::FileOrigin(it->fullId())
+			: media->document() ? media->document()->stickerOrGifOrigin()
+			: Data::FileOrigin();
+		api->refreshFileReference(origin, std::move(refreshed));
+
+		if (it->groupId().value == 0) continue;
+
+		if (media != nullptr && media->webpage() == nullptr) {
+			auto inputMedia = media->photo()
+				? MTP_inputMediaPhoto(MTP_flags(0), media->photo()->mtpInput(), MTPint())
+				: MTP_inputMediaDocument(MTP_flags(0), media->document()->mtpInput(), MTPint(), MTPstring());
+			auto caption = it->originalText();
+			auto entities = Api::EntitiesToMTP(session, caption.entities, Api::ConvertOption::SkipLocal);
+			const auto flags = !entities.v.isEmpty() ? MTPDinputSingleMedia::Flag::f_entities : MTPDinputSingleMedia::Flag(0);
+			auto randomId = base::RandomValue<uint64>();
+
+			mediaAlbums[it->groupId().value].push_back(MTP_inputSingleMedia(
+				MTP_flags(flags),
+				inputMedia,
+				MTP_long(randomId),
+				MTP_string(caption.text),
+				entities));
+		}
+	}
+	if (!mediaAlbums.isEmpty()) {
+		for (const auto& album : mediaAlbums) {
+			const auto finalFlags = MTPmessages_SendMultiMedia::Flags(0)
+				| MTPmessages_SendMultiMedia::Flag(0)
+				| MTPmessages_SendMultiMedia::Flag(0);
+			history->sendRequestId = histories->sendPreparedMessage(
+				history,
+				item->replyTo(),
+				uint64(0),
+				Data::Histories::PrepareMessage<MTPmessages_SendMultiMedia>(
+					MTP_flags(finalFlags),
+					history->peer->input,
+					Data::Histories::ReplyToPlaceholder(),
+					MTP_vector<MTPInputSingleMedia>(album),
+					MTP_int(0),
+					MTP_inputPeerEmpty()
+				),
+				[=](const MTPUpdates& result, const MTP::Response& response) {
+					//finish();
+				}, [=](const MTP::Error& error, const MTP::Response& response) {
+					//finish();
+					}
+				);
+			//data->requests.insert(history->sendRequestId);
+			//histories.sendRequest(history, requestType, [=](Fn<void()> finish) {
+			//	auto& api = history->session().api();
+			//	const auto peer = history->peer;
+			//	history->sendRequestId = api.request(
+			//		MTPmessages_SendMultiMedia(
+			//			MTP_flags(finalFlags),
+			//			peer->input,
+			//			Data::Histories::ReplyToPlaceholder(),
+			//			MTP_vector<MTPInputSingleMedia>(album),
+			//			MTP_int(options.scheduled),
+				//		MTP_inputPeerEmpty()
+			//	)).done([=](const MTPUpdates &result) {
+			//		//finish();
+			//	}).fail([=](const MTP::Error &error) {
+			//		//finish();
+			//	}).afterRequest(history->sendRequestId
+			//	).send();
+			//	return history->sendRequestId;MTPinputphoto
+			//});
+		}
+	}
+
+	for (const auto it : items) {
+		auto item = controller()->session().data().message(it);
+		auto action = Api::SendAction(history->peer->owner().history(self));
+		action.clearDraft = false;
+		action.generateLocal = false;
+		auto message = Api::MessageToSend(action);
+		if (item->media() != nullptr && item->media()->webpage() == nullptr) {
+			if (item->media()->photo() != nullptr) {
+				auto photo = item->media()->photo();
+				message.textWithTags = { item->originalText().text, TextUtilities::ConvertEntitiesToTextTags(item->originalText().entities) };
+				//api->sendMedia(item, MTPInputMedia(photo->mtpInput()), action.options);
+				Api::SendExistingPhoto(std::move(message), photo);
+			}
+		}
+		else {
+			
+			message.textWithTags = { item->originalText().text, TextUtilities::ConvertEntitiesToTextTags(item->originalText().entities) };
+			//message.action = Api::SendAction(history);
+			api->sendMessage(std::move(message));
+		}
+
+	}
+	Ui::Toast::Show(tr::lng_share_done(tr::now));
+
+	if (const auto strong = weak.data()) {
+		strong->clearSelected();
+	}
+
+	/*api->forwardMessages(std::move(resolved), action, [=] {
 		Ui::Toast::Show(tr::lng_share_done(tr::now));
 
 		if (const auto strong = weak.data()) {
 			strong->clearSelected();
 		}
-	});
+	});*/
 }
 
 void HistoryWidget::confirmDeleteSelected() {

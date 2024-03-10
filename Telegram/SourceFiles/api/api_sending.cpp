@@ -180,7 +180,8 @@ void SendExistingMedia(
 	};
 	performRequest(performRequest);
 
-	api->finishForwarding(message.action);
+	api->sendAction(message.action);
+	//api->finishForwarding(message.action);
 }
 
 } // namespace

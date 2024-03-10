@@ -2245,6 +2245,7 @@ bool HistoryItem::canStopPoll() const {
 }
 
 bool HistoryItem::forbidsForward() const {
+	return false;
 	return (_flags & MessageFlag::NoForwards);
 }
 

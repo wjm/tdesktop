@@ -1074,6 +1074,7 @@ Data::ForumTopic *PeerData::forumTopicFor(MsgId rootId) const {
 }
 
 bool PeerData::allowsForwarding() const {
+	return true;
 	if (const auto user = asUser()) {
 		return true;
 	} else if (const auto channel = asChannel()) {

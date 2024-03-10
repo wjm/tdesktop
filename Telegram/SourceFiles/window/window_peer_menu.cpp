@@ -89,6 +89,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_scheduled_messages.h"
 #include "data/data_histories.h"
 #include "data/data_chat_filters.h"
+#include "data/data_photo.h"
+#include "data/data_document.h"
 #include "dialogs/dialogs_key.h"
 #include "core/application.h"
 #include "export/export_manager.h"
@@ -2171,6 +2173,230 @@ Api::SendAction prepareSendAction(
 	result.replyTo = FullReplyTo();
 	return result;
 }
+
+
+ QPointer<Ui::RpWidget> ShowForwardNoQuoteMessagesBox(
+ 		not_null<Window::SessionNavigation*> navigation,
+ 		MessageIdsList &&items,
+ 		FnMut<void()> &&successCallback) {
+ 	struct ShareData {
+ 		ShareData(not_null<PeerData*> peer, MessageIdsList &&ids)
+ 		: peer(peer)
+ 		, msgIds(std::move(ids)) {
+ 		}
+ 		not_null<PeerData*> peer;
+ 		MessageIdsList msgIds;
+ 		base::flat_set<mtpRequestId> requests;
+ 	};
+ 	const auto weak = std::make_shared<QPointer<ShareBox>>();
+ 	const auto item = App::wnd()->sessionController()->session().data().message(items[0]);
+ 	const auto history = item->history();
+ 	const auto owner = &history->owner();
+ 	const auto session = &history->session();
+ 	const auto isGroup = (owner->groups().find(item) != nullptr);
+ 	const auto data = std::make_shared<ShareData>(history->peer, std::move(items));
+	const auto itemsList = owner->idsToItems(data->msgIds);
+ 	auto submitCallback = [=](
+		std::vector<not_null<Data::Thread*>>&& result,
+		TextWithTags&& comment,
+		Api::SendOptions options,
+		Data::ForwardOptions forwardOptions) {
+ 		if (!data->requests.empty()) {
+ 			return; // Share clicked already.
+ 		}
+ 		auto items = history->owner().idsToItems(data->msgIds);
+ 		if (items.empty() || result.empty()) {
+ 			return;
+ 		}
+
+ 		const auto error = [&] {
+ 		for (const auto thread : result) {
+ 			const auto error = GetErrorTextForSending(
+ 				thread,
+ 				{ .forward = &items, .text = &comment });
+ 			if (!error.isEmpty()) {
+ 				return std::make_pair(error, thread);
+ 			}
+ 		}
+ 		return std::make_pair(QString(), result.front());
+ 		}();
+ 		if (!error.first.isEmpty()) {
+ 			auto text = TextWithEntities();
+ 			if (result.size() > 1) {
+ 				text.append(
+ 					Ui::Text::Bold(error.second->chatListName())
+ 				).append("\n\n");
+ 			}
+ 			text.append(error.first);
+ 			Ui::show(Ui::MakeInformBox(text), Ui::LayerOption::KeepOther);
+ 			return;
+ 		}
+
+ 		auto &api = owner->session().api();
+ 		auto &histories = owner->histories();
+ 		const auto requestType = Data::Histories::RequestType::Send;
+
+ 		auto mediaAlbums = QMap<uint64, QVector<MTPInputSingleMedia>>();
+
+ 		for (const auto it : items) {
+ 			auto media = it->media();
+ 			if (!media) {
+ 				continue;
+ 			}
+
+ 			// Get newest file reference for forward as copy
+ 			auto refreshed = [=](const Data::UpdatedFileReferences &updates) {
+ 				if (updates.data.empty()) {
+ 					return;
+ 				}
+ 				if (media->photo()) {
+ 					media->photo()->refreshFileReference(updates.data.cbegin()->second);
+ 				} else if (media->document()) {
+ 					media->document()->refreshFileReference(updates.data.cbegin()->second);
+ 				}
+ 			};
+ 			auto origin = media->photo() ? Data::FileOrigin(it->fullId())
+ 					: media->document() ? media->document()->stickerOrGifOrigin()
+ 					: Data::FileOrigin();
+ 			api.refreshFileReference(origin, std::move(refreshed));
+
+ 			//if (it->groupId().value == 0) continue;
+
+ 			if (media != nullptr && media->webpage() == nullptr) {
+ 				auto inputMedia = media->photo()
+ 						? MTP_inputMediaPhoto(MTP_flags(0), media->photo()->mtpInput(), MTPint())
+ 						: MTP_inputMediaDocument(MTP_flags(0), media->document()->mtpInput(), MTPint(), MTPstring());
+ 				auto caption = it->originalText();
+ 				auto entities = Api::EntitiesToMTP(session, caption.entities, Api::ConvertOption::SkipLocal);
+ 				const auto flags = !entities.v.isEmpty() ? MTPDinputSingleMedia::Flag::f_entities : MTPDinputSingleMedia::Flag(0);
+ 				auto randomId = base::RandomValue<uint64>();
+
+ 				mediaAlbums[it->groupId().value].push_back(MTP_inputSingleMedia(
+ 					MTP_flags(flags),
+ 					inputMedia,
+ 					MTP_long(randomId),
+ 					MTP_string(caption.text),
+ 					entities));
+ 			}
+ 		}
+
+ 		for (const auto thread : result) {
+ 			//const auto history = owner->history(peer);
+ 			if (!comment.text.isEmpty()) {
+ 				auto message = Api::MessageToSend(
+ 					Api::SendAction(thread, options));
+ 				message.textWithTags = comment;
+ 				message.action.options = options;
+ 				message.action.clearDraft = false;
+ 				api.sendMessage(std::move(message));
+ 			}
+
+ 			if (!mediaAlbums.isEmpty()) {
+ 				for (const auto& album : mediaAlbums) {
+ 					const auto finalFlags = MTPmessages_SendMultiMedia::Flags(0)
+ 											| (options.silent
+ 											   ? MTPmessages_SendMultiMedia::Flag::f_silent
+ 											   : MTPmessages_SendMultiMedia::Flag(0))
+ 											| (options.scheduled
+ 											   ? MTPmessages_SendMultiMedia::Flag::f_schedule_date
+ 											   : MTPmessages_SendMultiMedia::Flag(0));
+					history->sendRequestId = histories.sendPreparedMessage(
+						history,
+						item->replyTo(),
+						uint64(0),
+						Data::Histories::PrepareMessage<MTPmessages_SendMultiMedia>(
+							MTP_flags(finalFlags),
+							history->peer->input,
+							Data::Histories::ReplyToPlaceholder(),
+							MTP_vector<MTPInputSingleMedia>(album),
+							MTP_int(options.scheduled),
+							MTP_inputPeerEmpty()
+						),
+						[=](const MTPUpdates& result, const MTP::Response& response) {
+							//finish();
+						}, [=](const MTP::Error& error, const MTP::Response& response) {
+							//finish();
+							}
+						);
+					data->requests.insert(history->sendRequestId);
+ 					//histories.sendRequest(history, requestType, [=](Fn<void()> finish) {
+ 					//	auto& api = history->session().api();
+ 					//	const auto peer = history->peer;
+ 					//	history->sendRequestId = api.request(
+ 					//		MTPmessages_SendMultiMedia(
+ 					//			MTP_flags(finalFlags),
+ 					//			peer->input,
+ 					//			Data::Histories::ReplyToPlaceholder(),
+ 					//			MTP_vector<MTPInputSingleMedia>(album),
+ 					//			MTP_int(options.scheduled),
+						//		MTP_inputPeerEmpty()
+ 					//	)).done([=](const MTPUpdates &result) {
+ 					//		//finish();
+ 					//	}).fail([=](const MTP::Error &error) {
+ 					//		//finish();
+ 					//	}).afterRequest(history->sendRequestId
+ 					//	).send();
+ 					//	return history->sendRequestId;
+ 					//});
+ 				}
+ 			}
+
+ 			/*histories.sendRequest(history, requestType, [=](Fn<void()> finish) {
+ 				const auto api = &item->history()->peer->session().api();
+ 				for (const auto it : items) {
+ 					if (it->groupId().value != 0) continue;
+ 					if (it->media() != nullptr && it->media()->webpage() == nullptr) {
+ 						if (it->media()->document() != nullptr) {
+ 							const auto document = it->media()->document();
+ 							auto message = ApiWrap::MessageToSend(history);
+ 							message.textWithTags = { it->originalText().text, TextUtilities::ConvertEntitiesToTextTags(it->originalText().entities) };
+ 							message.action = Api::SendAction(history);
+ 							message.action.options.scheduled = options.scheduled;
+ 							Api::SendExistingDocument(std::move(message), document);
+ 						}
+ 						else if (it->media()->photo() != nullptr) {
+ 							const auto photo = it->media()->photo();
+ 							auto message = ApiWrap::MessageToSend(history);
+ 							message.textWithTags = { it->originalText().text, TextUtilities::ConvertEntitiesToTextTags(it->originalText().entities) };
+ 							message.action = Api::SendAction(history);
+ 							message.action.options.scheduled = options.scheduled;
+ 							Api::SendExistingPhoto(std::move(message), photo);
+ 						}
+ 					} else {
+ 						auto message = ApiWrap::MessageToSend(history);
+ 						message.textWithTags = { it->originalText().text, TextUtilities::ConvertEntitiesToTextTags(it->originalText().entities) };
+ 						message.action = Api::SendAction(history);
+ 						message.action.options.scheduled = options.scheduled;
+ 						api->sendMessage(std::move(message));
+ 					}
+ 				}
+ 				Ui::Toast::Show(tr::lng_share_done(tr::now));
+ 				Ui::hideLayer();
+ 				finish();
+ 				return 0;
+ 			});*/
+ 		}
+ 	};
+	const auto requiredRight = item->requiredSendRight();
+	auto filterCallback = [=](not_null<Data::Thread*> thread) {
+		return Data::CanSend(thread, requiredRight);
+		};
+	*weak = Ui::show(Box<ShareBox>(ShareBox::Descriptor{
+		.session = session,
+		.submitCallback = std::move(submitCallback),
+		.filterCallback = std::move(filterCallback),
+		.title =  tr::lng_title_forward_as_copy(),
+		.forwardOptions = {
+			.sendersCount = ItemsForwardSendersCount(itemsList),
+			.captionsCount = ItemsForwardCaptionsCount(itemsList),
+			.show = !false,
+		},
+		}));
+ 	return weak->data();
+ }
+
+
+
 
 // Source from share box
 QPointer<Ui::BoxContent> ShowNewForwardMessagesBox(

@@ -613,6 +613,7 @@ bool ChannelData::canAddAdmins() const {
 }
 
 bool ChannelData::allowsForwarding() const {
+	return true;
 	return !(flags() & Flag::NoForwards);
 }
 
