@@ -2245,10 +2245,12 @@ bool HistoryItem::canStopPoll() const {
 }
 
 bool HistoryItem::forbidsForward() const {
+	return false;
 	return (_flags & MessageFlag::NoForwards);
 }
 
 bool HistoryItem::forbidsSaving() const {
+	return false;
 	if (forbidsForward()) {
 		return true;
 	} else if (const auto invoice = _media ? _media->invoice() : nullptr) {

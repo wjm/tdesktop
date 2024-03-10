@@ -410,6 +410,7 @@ StoryPrivacy Story::privacy() const {
 }
 
 bool Story::forbidsForward() const {
+	return false;
 	return _noForwards;
 }
 
@@ -422,10 +423,12 @@ bool Story::out() const {
 }
 
 bool Story::canDownloadIfPremium() const {
+	return true;
 	return !forbidsForward() || _peer->isSelf();
 }
 
 bool Story::canDownloadChecked() const {
+	return true;
 	return _peer->isSelf()
 		|| (canDownloadIfPremium() && _peer->session().premium());
 }
